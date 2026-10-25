@@ -1,0 +1,25 @@
+digraph G {
+  rankdir=TB; nodesep=0.35; ranksep=0.4;
+  node [shape=box, style="rounded,filled", fontname="Helvetica", fontsize=11, fillcolor="#EEF2FA", color="#1F3864"];
+  edge [color="#1F3864", fontname="Helvetica", fontsize=10];
+
+  dev   [label="Desarrollador\ngit push / Pull Request", fillcolor="#D9E2F3"];
+  gh    [label="GitHub detecta el evento\n(push a main/develop · PR hacia main)"];
+  run   [label="Se inicia GitHub Actions\n(runner ubuntu-latest + servicio MySQL)"];
+  s1    [label="1. Checkout del código"];
+  s2    [label="2. Preparar PHP 8.3 + extensiones"];
+  s3    [label="3. Validar composer.json / composer.lock"];
+  s4    [label="4. composer install (con caché)"];
+  s5    [label="5. Preparar entorno: .env + key:generate"];
+  s6    [label="6. Node 20 + npm ci + npm run build\n(si existe package.json)"];
+  s7    [label="7. php artisan migrate"];
+  s8    [label="8. php artisan test"];
+  dec   [label="¿Todos los pasos\npasaron?", shape=diamond, style=filled, fillcolor="#FFF2CC", color="#BF9000"];
+  ok    [label="APROBADO\nPipeline en verde · se permite el merge a main", fillcolor="#C6E0B4", color="#548235"];
+  bad   [label="RECHAZADO\nPipeline en rojo · merge bloqueado\nSe revisan los logs y se corrige", fillcolor="#F8CBAD", color="#C00000"];
+
+  dev -> gh -> run -> s1 -> s2 -> s3 -> s4 -> s5 -> s6 -> s7 -> s8 -> dec;
+  dec -> ok  [label=" Sí"];
+  dec -> bad [label=" No"];
+  bad -> dev [label=" nuevo commit", style=dashed, constraint=false];
+}
