@@ -22,7 +22,7 @@ permissions:
   contents: read
 
 env:
-  PHP_VERSION: '8.3'          # Ajusta a la versión que usa tu proyecto (Laravel 11/12 >= 8.2)
+  PHP_VERSION: ''          # Ajusta a la versión que usa tu proyecto (Laravel 11/12 >= 8.2)
   NODE_VERSION: '20'
   PHP_EXTENSIONS: mbstring, xml, ctype, json, bcmath, curl, fileinfo, tokenizer, pdo, pdo_mysql, pdo_sqlite, sqlite3, zip, intl, gd
 
