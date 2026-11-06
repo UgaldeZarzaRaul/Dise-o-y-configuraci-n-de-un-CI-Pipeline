@@ -1,0 +1,252 @@
+# =============================================================================
+#  Pipeline de Integración y Entrega Continua (CI/CD) – Proyecto Laravel
+#  Alumno: <TU NOMBRE COMPLETO>   Matrícula: <TU MATRÍCULA>   Grupo: <GRUPO>
+#
+#  Etapas:
+#    1. ci              -> pruebas automatizadas (CI de la Unidad II)
+#    2. build-release   -> versión + dependencias de producción + artefacto
+#    3. deploy-preprod  -> validación del artefacto, smoke test y entrega
+#    4. github-release  -> (solo con tag vX.Y.Z) publica la versión en Releases
+# =============================================================================
+name: CI/CD - Liberación Laravel
+
+on:
+  push:
+    branches: [main, develop]
+    tags: ['v*.*.*']
+  pull_request:
+    branches: [main, develop]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PHP_VERSION: '8.3'          # Ajusta a la versión que usa tu proyecto (Laravel 11/12 >= 8.2)
+  NODE_VERSION: '20'
+  PHP_EXTENSIONS: mbstring, xml, ctype, json, bcmath, curl, fileinfo, tokenizer, pdo, pdo_mysql, pdo_sqlite, sqlite3, zip, intl, gd
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # 1) INTEGRACIÓN CONTINUA
+  # ---------------------------------------------------------------------------
+  ci:
+    name: 1 · CI - Pruebas automatizadas
+    runs-on: ubuntu-latest
+    steps:
+      - name: Obtener el código desde GitHub
+        uses: actions/checkout@v4
+
+      - name: Configurar PHP ${{ env.PHP_VERSION }}
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ env.PHP_VERSION }}
+          extensions: ${{ env.PHP_EXTENSIONS }}
+          coverage: none
+          tools: composer:v2
+
+      - name: Caché de Composer
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/composer/files
+          key: composer-${{ runner.os }}-${{ hashFiles('composer.lock') }}
+          restore-keys: composer-${{ runner.os }}-
+
+      - name: Validar composer.json / composer.lock
+        run: composer validate --no-check-publish
+
+      - name: Instalar dependencias (incluye desarrollo para pruebas)
+        run: composer install --prefer-dist --no-interaction --no-progress
+
+      - name: Preparar entorno de pruebas
+        run: |
+          cp .env.example .env
+          php artisan key:generate
+          mkdir -p database && touch database/database.sqlite
+
+      - name: Ejecutar pruebas automatizadas
+        env:
+          DB_CONNECTION: sqlite
+          DB_DATABASE: ${{ github.workspace }}/database/database.sqlite
+        run: php artisan test
+
+  # ---------------------------------------------------------------------------
+  # 2) CONSTRUCCIÓN DEL ARTEFACTO DE LIBERACIÓN
+  # ---------------------------------------------------------------------------
+  build-release:
+    name: 2 · Generar artefacto de liberación
+    needs: ci
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      artifact: ${{ steps.version.outputs.artifact }}
+      channel: ${{ steps.version.outputs.channel }}
+    steps:
+      - name: Obtener el código (con historial de tags)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Calcular número de versión (SemVer)
+        id: version
+        run: bash scripts/version.sh | tee -a "$GITHUB_OUTPUT"
+
+      - name: Configurar PHP ${{ env.PHP_VERSION }}
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ env.PHP_VERSION }}
+          extensions: ${{ env.PHP_EXTENSIONS }}
+          coverage: none
+          tools: composer:v2
+
+      - name: Instalar SOLO dependencias de producción
+        run: composer install --no-dev --prefer-dist --no-interaction --no-progress --optimize-autoloader
+
+      - name: Configurar Node (si el proyecto usa Vite)
+        if: hashFiles('package-lock.json') != ''
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Compilar recursos front-end (public/build)
+        if: hashFiles('package-lock.json') != ''
+        run: |
+          npm ci
+          npm run build
+
+      - name: Preparar archivos y generar paquete
+        run: bash scripts/prepare-release.sh "${{ steps.version.outputs.version }}"
+
+      - name: Validar contenido del artefacto
+        run: bash scripts/validate-artifact.sh "dist/${{ steps.version.outputs.artifact }}.tar.gz" dist/validation-report.md
+
+      - name: Publicar artefacto
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.version.outputs.artifact }}
+          path: dist/
+          retention-days: 7
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  # 3) ENTREGA EN PREPRODUCCIÓN
+  # ---------------------------------------------------------------------------
+  deploy-preprod:
+    name: 3 · Entregar en preproducción
+    needs: build-release
+    runs-on: ubuntu-latest
+    # Si tu repositorio es PRIVADO con plan gratuito y GitHub marca error con
+    # "environment", elimina las dos líneas siguientes y usa secretos del repo.
+    environment:
+      name: preproduccion
+    concurrency:
+      group: deploy-preproduccion
+      cancel-in-progress: false
+    env:
+      ARTIFACT: ${{ needs.build-release.outputs.artifact }}
+      VERSION: ${{ needs.build-release.outputs.version }}
+      STAGING_HOST: ${{ secrets.STAGING_HOST }}
+      STAGING_USER: ${{ secrets.STAGING_USER }}
+      STAGING_PORT: ${{ secrets.STAGING_PORT || '22' }}
+      STAGING_PATH: ${{ vars.STAGING_PATH || '/var/www/laravel-preprod' }}
+    steps:
+      - name: Obtener scripts de despliegue
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            scripts
+            deploy
+
+      - name: Descargar artefacto de la ejecución
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.ARTIFACT }}
+          path: artifact
+
+      - name: Verificar integridad (SHA-256)
+        working-directory: artifact
+        run: sha256sum -c "${ARTIFACT}.tar.gz.sha256"
+
+      - name: Re-validar contenido del artefacto descargado
+        run: bash scripts/validate-artifact.sh "artifact/${ARTIFACT}.tar.gz" artifact/validation-report-download.md
+
+      - name: Configurar PHP para prueba de instalación
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ env.PHP_VERSION }}
+          extensions: ${{ env.PHP_EXTENSIONS }}
+          coverage: none
+
+      - name: Prueba de instalación (smoke test en ambiente efímero)
+        run: bash scripts/smoke-test.sh "artifact/${ARTIFACT}.tar.gz"
+
+      - name: Entregar en servidor de preproducción (SSH)
+        if: env.STAGING_HOST != ''
+        env:
+          STAGING_SSH_KEY: ${{ secrets.STAGING_SSH_KEY }}
+          STAGING_KNOWN_HOSTS: ${{ secrets.STAGING_KNOWN_HOSTS }}
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$STAGING_SSH_KEY" > ~/.ssh/id_deploy && chmod 600 ~/.ssh/id_deploy
+          if [ -n "$STAGING_KNOWN_HOSTS" ]; then
+            printf '%s\n' "$STAGING_KNOWN_HOSTS" >> ~/.ssh/known_hosts
+          else
+            ssh-keyscan -p "$STAGING_PORT" "$STAGING_HOST" >> ~/.ssh/known_hosts
+          fi
+          SSH_OPTS="-i ~/.ssh/id_deploy -p $STAGING_PORT"
+          scp -i ~/.ssh/id_deploy -P "$STAGING_PORT" \
+              "artifact/${ARTIFACT}.tar.gz" scripts/install-release.sh \
+              "$STAGING_USER@$STAGING_HOST:/tmp/"
+          ssh $SSH_OPTS "$STAGING_USER@$STAGING_HOST" \
+              "APP_DIR='$STAGING_PATH' bash /tmp/install-release.sh /tmp/${ARTIFACT}.tar.gz"
+
+      - name: Instrucciones de entrega manual (sin servidor SSH configurado)
+        if: env.STAGING_HOST == ''
+        run: |
+          {
+            echo "### Entrega manual en preproducción"
+            echo "No hay secretos SSH configurados; el artefacto **${ARTIFACT}** quedó listo."
+            echo '```bash'
+            echo "gh run download ${GITHUB_RUN_ID} -n ${ARTIFACT} -D ./artifact"
+            echo "scp artifact/${ARTIFACT}.tar.gz scripts/install-release.sh usuario@servidor:/tmp/"
+            echo "ssh usuario@servidor 'bash /tmp/install-release.sh /tmp/${ARTIFACT}.tar.gz'"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Publicar reporte de validación (evidencia)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: evidencia-validacion-${{ env.VERSION }}
+          path: |
+            artifact/*.md
+            artifact/*.txt
+          retention-days: 30
+
+  # ---------------------------------------------------------------------------
+  # 4) PUBLICAR VERSIÓN (solo cuando se empuja un tag vX.Y.Z)
+  # ---------------------------------------------------------------------------
+  github-release:
+    name: 4 · Publicar versión en GitHub Releases
+    needs: [build-release, deploy-preprod]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.build-release.outputs.artifact }}
+          path: dist
+      - name: Crear release (pre-release hasta aprobar en preproducción)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.build-release.outputs.version }}
+        run: |
+          gh release create "$VERSION" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "Laravel $VERSION" \
+            --generate-notes \
+            --prerelease

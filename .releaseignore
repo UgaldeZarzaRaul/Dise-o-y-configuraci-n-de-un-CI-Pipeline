@@ -1,0 +1,53 @@
+# -----------------------------------------------------------------------------
+# Archivos/carpetas que NO forman parte del artefacto de liberación.
+# Formato: patrones de GNU tar con --anchored ('*' también cruza '/').
+# vendor/ se copia aparte (solo dependencias de producción).
+# Los archivos .env*.example se vuelven a incluir después de aplicar esta lista.
+# -----------------------------------------------------------------------------
+
+# Control de versiones, CI e IDEs
+./.git
+./.github
+./.idea
+./.vscode
+./.fleet
+*/.DS_Store
+
+# Salidas del proceso de liberación, documentación y aprovisionamiento del servidor
+./dist
+./.release-build
+./docs
+./deploy
+
+# Dependencias (vendor se agrega por separado) y herramientas de desarrollo
+./vendor
+./node_modules
+./tests
+./phpunit.xml
+./.phpunit.cache
+*/.phpunit.result.cache
+./coverage
+*/docker-compose.override.yml
+
+# Secretos y configuración local
+*/.env
+*/.env.*
+*/auth.json
+*.pem
+*.key
+*/id_rsa*
+*.p12
+
+# Datos y caché generados en tiempo de ejecución (la estructura se recrea)
+*.sqlite
+*.sqlite-journal
+./storage/logs/*
+./storage/framework/cache/data/*
+./storage/framework/sessions/*
+./storage/framework/views/*
+./storage/framework/testing
+./storage/app/public/*
+./storage/app/private/*
+./bootstrap/cache/*.php
+./public/hot
+./public/storage
